@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai4gwf"
+version = "0.1.0"
+description = "AI for Groundwater Flow training utilities"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "h5py>=3.9",
+    "numpy>=1.24",
+    "nvidia-physicsnemo",
+    "omegaconf>=2.3",
+    "torch>=2.1",
+]
+
+[project.scripts]
+ai4gwf-train = "ai4gwf.train:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
