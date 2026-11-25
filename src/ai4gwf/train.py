@@ -3,9 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
-from itertools import cycle
 from pathlib import Path
-import sys
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -15,14 +13,33 @@ from torch import nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
-import data as data
-from model import build_model
+
+from . import data
+from .model import build_model
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_dir", default="configs")
-    parser.add_argument("--config_name", default="config_vitens")
+    parser.add_argument("--config", type=Path, required=True, help="Path to the training YAML file")
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path.cwd(),
+        help="Base directory for relative paths in the YAML file (default: current directory)",
+    )
+    parser.add_argument("--max-steps", type=int, help="Override the configured maximum training steps")
+    parser.add_argument(
+        "--validation-frequency",
+        type=int,
+        help="Override how often to evaluate the validation dataset",
+    )
+    parser.add_argument("--train-batch-size", type=int, help="Override the configured training batch size")
+    parser.add_argument(
+        "--validation-batch-size",
+        type=int,
+        help="Override the configured validation batch size",
+    )
+    parser.add_argument("--output-dir", type=Path, help="Override the configured output directory")
     return parser.parse_args()
 
 
@@ -81,18 +98,36 @@ def _save_predictions(
 
 def main() -> None:
     args = parse_args()
-    config_dir = Path(args.config_dir)
-    if not config_dir.is_absolute():
-        config_dir = PROJECT_ROOT / config_dir
-    config_path = config_dir / Path(args.config_name).with_suffix(".yaml")
+    config_path = args.config.expanduser().resolve()
     cfg = OmegaConf.load(config_path)
+
+    train_batch_size = (
+        args.train_batch_size if args.train_batch_size is not None else int(cfg.batch_size.grid)
+    )
+    validation_batch_size = (
+        args.validation_batch_size
+        if args.validation_batch_size is not None
+        else int(cfg.batch_size.validation)
+    )
+    validation_frequency = (
+        args.validation_frequency
+        if args.validation_frequency is not None
+        else int(cfg.training.rec_validation_freq)
+    )
+    max_steps = args.max_steps if args.max_steps is not None else int(cfg.training.max_steps)
+    if validation_frequency <= 0:
+        raise ValueError("Validation frequency must be greater than zero")
+    if max_steps <= 0:
+        raise ValueError("Maximum training steps must be greater than zero")
+    if train_batch_size <= 0 or validation_batch_size <= 0:
+        raise ValueError("Batch sizes must be greater than zero")
 
     input_key_specs = _normalize_key_specs(cfg.custom.data.input_keys)
     output_key_specs = _normalize_key_specs(cfg.custom.data.output_key)
     input_key_names = [str(item[0]) for item in input_key_specs]
     output_key_name = str(output_key_specs[0][0])
     data_paths = [
-        path if path.is_absolute() else PROJECT_ROOT / path
+        path if path.is_absolute() else args.data_root.expanduser().resolve() / path
         for path in map(Path, cfg.custom.data.files)
     ]
     missing_paths = [path for path in data_paths if not path.is_file()]
@@ -108,10 +143,11 @@ def main() -> None:
         float(cfg.custom.data.train_fraction),
         int(cfg.custom.data.seed),
     )
+    del arrays
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader = DataLoader(train_set, batch_size=int(cfg.batch_size.grid), shuffle=True)
-    validation_loader = DataLoader(validation_set, batch_size=int(cfg.batch_size.validation))
+    train_loader = DataLoader(train_set, batch_size=train_batch_size, shuffle=True)
+    validation_loader = DataLoader(validation_set, batch_size=validation_batch_size)
     sample_inputs, sample_targets = train_set[0]
     model = build_model(
         cfg.arch.afno.img_shape,
@@ -126,14 +162,22 @@ def main() -> None:
         lr_lambda=lambda step: float(cfg.scheduler.decay_rate) ** (step / float(cfg.scheduler.decay_steps)),
     )
     loss_fn = nn.MSELoss()
-    output_dir = Path(cfg.custom.output.directory)
+    output_dir = (
+        args.output_dir if args.output_dir is not None else Path(cfg.custom.output.directory)
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / cfg.custom.output.checkpoint_name
     prediction_path = output_dir / cfg.custom.output.predictions_name
-    validation_frequency = int(cfg.training.rec_validation_freq)
     best_validation_loss = float("inf")
 
-    for step, (inputs, targets) in enumerate(cycle(train_loader), start=1):
+    train_iterator = iter(train_loader)
+    for step in range(1, max_steps + 1):
+        try:
+            inputs, targets = next(train_iterator)
+        except StopIteration:
+            train_iterator = iter(train_loader)
+            inputs, targets = next(train_iterator)
+
         model.train()
         optimizer.zero_grad()
         predictions = model(inputs.to(device))
@@ -142,7 +186,7 @@ def main() -> None:
         optimizer.step()
         scheduler.step()
 
-        if step % validation_frequency == 0 or step == int(cfg.training.max_steps):
+        if step % validation_frequency == 0 or step == max_steps:
             validation_loss = _evaluate(model, validation_loader, device)
             print(f"step={step} train_mse={loss.item():.6e} validation_mse={validation_loss:.6e}")
             if validation_loss < best_validation_loss:
@@ -165,10 +209,6 @@ def main() -> None:
                     device,
                     int(cfg.custom.output.examples_to_plot),
                 )
-
-        if step == int(cfg.training.max_steps):
-            break
-
 
 if __name__ == "__main__":
     main()
