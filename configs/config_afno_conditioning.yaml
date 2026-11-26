@@ -1,0 +1,39 @@
+arch:
+  afno:
+    img_shape: [32, 32]
+    patch_size: [4, 4]
+    embed_dim: 32
+    depth: 2
+    num_blocks: 4
+film:
+  enabled: true
+  hidden_dim: 64
+batch_size:
+  grid: 8
+  validation: 8
+optimizer:
+  lr: 0.001
+scheduler:
+  decay_rate: 0.95
+  decay_steps: 1000
+training:
+  max_steps: 1000
+  rec_validation_freq: 100
+custom:
+  data:
+    # Replace the path, keys and ranges. No spatial input dataset is needed.
+    files: [data/example_conditioning.h5]
+    input_keys: []
+    scalar_keys:
+      - [pumping_rate, 0.0, 1000.0]
+      - [boundary_head, -10.0, 10.0]
+    time_series_keys:
+      - [rainfall_history, 0.0, 100.0]
+    output_key: [head, -10.0, 10.0]
+    train_fraction: 0.8
+    seed: 42
+  output:
+    directory: outputs/afno_conditioning
+    checkpoint_name: best.pt
+    predictions_name: predictions.npz
+    examples_to_plot: 4
