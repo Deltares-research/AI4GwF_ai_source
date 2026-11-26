@@ -29,8 +29,27 @@ ModelInputs = torch.Tensor | Mapping[str, torch.Tensor]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_dir", default="configs")
-    parser.add_argument("--config_name", default="config_afno")
+    parser.add_argument("--config", type=Path, help="Path to the training YAML file")
+    parser.add_argument("--config_dir", "--config-dir", help="Directory containing the training YAML file")
+    parser.add_argument("--config_name", "--config-name", default="config_afno")
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        help="Base directory for relative data paths (default depends on config selection)",
+    )
+    parser.add_argument("--max-steps", type=int, help="Override the configured maximum training steps")
+    parser.add_argument(
+        "--validation-frequency",
+        type=int,
+        help="Override how often to evaluate the validation dataset",
+    )
+    parser.add_argument("--train-batch-size", type=int, help="Override the configured training batch size")
+    parser.add_argument(
+        "--validation-batch-size",
+        type=int,
+        help="Override the configured validation batch size",
+    )
+    parser.add_argument("--output-dir", type=Path, help="Override the configured output directory")
     return parser.parse_args()
 
 
@@ -131,15 +150,46 @@ def _save_predictions(
 
 def main() -> None:
     args = parse_args()
-    config_dir = Path(args.config_dir)
-    if not config_dir.is_absolute():
-        config_dir = PROJECT_ROOT / config_dir
-    config_path = config_dir / Path(args.config_name).with_suffix(".yaml")
+    config = getattr(args, "config", None)
+    if config is not None:
+        config_path = Path(config).expanduser().resolve()
+        default_data_root = Path.cwd()
+    else:
+        config_dir = Path(getattr(args, "config_dir", None) or "configs")
+        if not config_dir.is_absolute():
+            config_dir = PROJECT_ROOT / config_dir
+        config_path = config_dir / Path(
+            getattr(args, "config_name", "config_afno")
+        ).with_suffix(".yaml")
+        default_data_root = PROJECT_ROOT
+    data_root = getattr(args, "data_root", None) or default_data_root
+    data_root = Path(data_root).expanduser().resolve()
     cfg = OmegaConf.load(config_path)
     film_config = cfg.get("film", {})
     film_enabled = film_config.get("enabled", False)
     if not isinstance(film_enabled, bool):
         raise ValueError("film.enabled must be a boolean")
+
+    train_batch_size = getattr(args, "train_batch_size", None)
+    train_batch_size = train_batch_size if train_batch_size is not None else int(cfg.batch_size.grid)
+    validation_batch_size = (
+        getattr(args, "validation_batch_size", None)
+        if getattr(args, "validation_batch_size", None) is not None
+        else int(cfg.batch_size.validation)
+    )
+    validation_frequency = (
+        getattr(args, "validation_frequency", None)
+        if getattr(args, "validation_frequency", None) is not None
+        else int(cfg.training.rec_validation_freq)
+    )
+    max_steps = getattr(args, "max_steps", None)
+    max_steps = max_steps if max_steps is not None else int(cfg.training.max_steps)
+    if validation_frequency <= 0:
+        raise ValueError("Validation frequency must be greater than zero")
+    if max_steps <= 0:
+        raise ValueError("Maximum training steps must be greater than zero")
+    if train_batch_size <= 0 or validation_batch_size <= 0:
+        raise ValueError("Batch sizes must be greater than zero")
 
     input_key_specs = _normalize_key_specs(cfg.custom.data.get("input_keys"))
     output_key_specs = _normalize_key_specs(cfg.custom.data.output_key)
@@ -157,7 +207,7 @@ def main() -> None:
     if len(image_shape) not in (2, 3):
         raise ValueError("AFNO img_shape must define 2 or 3 spatial dimensions")
     data_paths = [
-        path if path.is_absolute() else PROJECT_ROOT / path
+        path if path.is_absolute() else data_root / path
         for path in map(Path, cfg.custom.data.files)
     ]
     missing_paths = [path for path in data_paths if not path.is_file()]
@@ -175,8 +225,8 @@ def main() -> None:
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader = DataLoader(train_set, batch_size=int(cfg.batch_size.grid), shuffle=True)
-    validation_loader = DataLoader(validation_set, batch_size=int(cfg.batch_size.validation))
+    train_loader = DataLoader(train_set, batch_size=train_batch_size, shuffle=True)
+    validation_loader = DataLoader(validation_set, batch_size=validation_batch_size)
     sample_inputs, sample_targets = train_set[0]
     sample_grid = _grid(sample_inputs)
     if tuple(sample_targets.shape[1:]) != image_shape:
@@ -202,11 +252,11 @@ def main() -> None:
         lr_lambda=lambda step: float(cfg.scheduler.decay_rate) ** (step / float(cfg.scheduler.decay_steps)),
     )
     loss_fn = nn.MSELoss()
-    output_dir = Path(cfg.custom.output.directory)
+    output_dir_arg = getattr(args, "output_dir", None)
+    output_dir = output_dir_arg if output_dir_arg is not None else Path(cfg.custom.output.directory)
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / cfg.custom.output.checkpoint_name
     prediction_path = output_dir / cfg.custom.output.predictions_name
-    validation_frequency = int(cfg.training.rec_validation_freq)
     visualize_epochs = cfg.custom.output.get("visualize_each_epoch", False)
     if not isinstance(visualize_epochs, bool):
         raise ValueError("custom.output.visualize_each_epoch must be a boolean")
@@ -238,7 +288,7 @@ def main() -> None:
             epoch_samples += len(targets)
         epoch_finished = step % len(train_loader) == 0
         validate = (
-            step % validation_frequency == 0 or step == int(cfg.training.max_steps)
+            step % validation_frequency == 0 or step == max_steps
             or (visualize_epochs and epoch_finished)
         )
 
@@ -299,9 +349,8 @@ def main() -> None:
                 epoch_loss_sum.zero_()
                 epoch_samples = 0
 
-        if step == int(cfg.training.max_steps):
+        if step == max_steps:
             break
-
 
 if __name__ == "__main__":
     main()

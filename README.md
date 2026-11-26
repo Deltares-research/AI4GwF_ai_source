@@ -24,6 +24,10 @@ python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://downl
 python -m pip install -r requirements.txt
 ```
 
+After installing a PyTorch build compatible with your hardware, you can install
+the project as a package with `python -m pip install .`. This also provides the
+`ai4gwf-train` command.
+
 The FiLM adapter targets PhysicsNeMo 1.3.0, pinned because it traverses AFNO's
 exposed components. CPU validation uses PyTorch 2.8.0 and torchvision 0.23.0.
 No GPU or PhysicsNeMo optional extras are required for these models.
@@ -54,12 +58,19 @@ python src/ai4gwf/train.py --config_name config_afno_3d
 
 # Equivalent package entry point
 PYTHONPATH=src python -m ai4gwf.train --config_name config_afno_film
+
+# Installed command with an explicit config and path overrides
+ai4gwf-train --config configs/config_afno_film.yaml --data-root .
 ```
 
 Use `--config_dir /path/to/configs` for another config directory. Relative config
-and HDF5 paths resolve against the repository root. Relative output directories
-resolve against the working directory. Example data paths are placeholders; no
-training data is bundled.
+and HDF5 paths resolve against the repository root when using `--config_name`;
+with `--config`, relative HDF5 paths resolve against `--data-root` (default: the
+working directory). Relative output directories resolve against the working
+directory. The installed command also supports `--max-steps`,
+`--validation-frequency`, `--train-batch-size`, `--validation-batch-size`, and
+`--output-dir` overrides. Example data paths are placeholders; no training data
+is bundled.
 
 ## HDF5 data contract
 
