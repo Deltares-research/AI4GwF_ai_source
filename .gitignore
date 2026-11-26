@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local datasets and training outputs
+*.h5
+*.hdf5
+*.pt
+*.npz
+/outputs/
